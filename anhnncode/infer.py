@@ -23,6 +23,7 @@ from .common import (DEFAULT_ROOT, catalog_by_name, import_zaic_tools, load_cata
                      select_samples, utf8_stdout, write_jsonl)
 
 TIME_LIMIT = 30.0  # seconds per sample (competition rule)
+LLM_AGENTS = ("llm", "hf", "cuongnq")  # agents that need transcripts
 
 
 # ============================================================================================ Environment wrapper
@@ -86,7 +87,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     ap.add_argument("--split", required=True)
-    ap.add_argument("--agent", choices=["empty", "oracle", "llm", "hf"], required=True)
+    ap.add_argument("--agent", choices=["empty", "oracle", "llm", "hf", "cuongnq"], required=True)
     ap.add_argument("--asr", default="oracle", help="transcript cache name: runs/transcripts/<split>.<asr>.jsonl")
     ap.add_argument("--transcripts", type=Path, default=None, help="explicit transcript file (overrides --asr)")
     ap.add_argument("--out-dir", type=Path, default=None)
@@ -98,7 +99,12 @@ def main(argv=None):
     ap.add_argument("--llm-model", default=None)
     ap.add_argument("--llm-max-steps", type=int, default=8)
     ap.add_argument("--hf-model", default="Qwen/Qwen2.5-1.5B-Instruct", help="model for --agent hf")
-    ap.add_argument("--device", default="cuda", help="device for --agent hf")
+    ap.add_argument("--device", default="cuda", help="device for --agent hf / cuongnq")
+    ap.add_argument("--cuongnq-backend", choices=["hf", "openai"], default="hf",
+                    help="--agent cuongnq: hf = --hf-model (+ --lora) in-process; openai = --llm-url / --llm-model server")
+    ap.add_argument("--lora", default=None, help="--agent cuongnq: LoRA adapter folder from cuongnqcode's training")
+    ap.add_argument("--think", action="store_true", help="--agent cuongnq: enable Qwen3/3.5 thinking")
+    ap.add_argument("--cuongnq-dir", type=Path, default=None, help="cuongnqcode/lifemate folder (default: next to anhnncode)")
     ap.add_argument("--time-limit", type=float, default=TIME_LIMIT,
                     help="per-sample agent deadline in seconds (competition: 30; raise it for slow dev GPUs, "
                          "samples over 30 s are still flagged)")
@@ -112,7 +118,7 @@ def main(argv=None):
     # --- Transcripts (required for LLM agents; every selected sample must have one)
     tpath = a.transcripts or Path("runs/transcripts") / f"{a.split}.{a.asr}.jsonl"
     transcripts = {}
-    if a.agent in ("llm", "hf"):
+    if a.agent in LLM_AGENTS:
         if not tpath.exists():
             raise SystemExit(f"no transcripts at {tpath}; run: python -m anhnncode.asr --split {a.split} --backend ...")
         transcripts = load_transcripts(tpath)
@@ -131,10 +137,18 @@ def main(argv=None):
         kw = dict(base_url=a.llm_url, model=a.llm_model, max_steps=a.llm_max_steps, seed=a.seed)
     elif a.agent == "hf":
         kw = dict(model=a.hf_model, device=a.device, max_steps=a.llm_max_steps, seed=a.seed)
+    elif a.agent == "cuongnq":
+        use_server = a.cuongnq_backend == "openai"
+        if use_server and not a.llm_model:
+            raise SystemExit("--llm-model is required for --agent cuongnq --cuongnq-backend openai")
+        kw = dict(model=a.llm_model if use_server else a.hf_model, backend=a.cuongnq_backend, lora=a.lora,
+                  base_url=a.llm_url, think=a.think, device=a.device)
+        if a.cuongnq_dir:
+            kw["code_dir"] = a.cuongnq_dir
     agent = make_agent(a.agent, catalog, **kw)
 
     # --- Output folder + resume: skip samples present in both log.jsonl and submission.jsonl
-    out = a.out_dir or Path("runs") / f"{a.split}.{a.agent}.{a.asr if a.agent in ('llm', 'hf') else 'na'}"
+    out = a.out_dir or Path("runs") / f"{a.split}.{a.agent}.{a.asr if a.agent in LLM_AGENTS else 'na'}"
     out.mkdir(parents=True, exist_ok=True)
     log_path, sub_path = out / "log.jsonl", out / "submission.jsonl"
     if a.overwrite:
@@ -149,7 +163,7 @@ def main(argv=None):
     t0, n, slow, errors = time.time(), 0, 0, 0
     with open(log_path, "a", encoding="utf-8", newline="\n") as flog, ThreadPoolExecutor(max_workers=a.workers) as pool:
         futs = [pool.submit(run_one, zt, a.root, a.split, s, agent, transcripts, a.time_limit) for s in todo]
-        report_every = 10 if a.agent in ("llm", "hf") else 100
+        report_every = 10 if a.agent in LLM_AGENTS else 100
         for f in as_completed(futs):
             sub, log = f.result()
             subs[sub["id"]] = sub

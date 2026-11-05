@@ -7,6 +7,7 @@ env.validate / env.call (the only methods allowed at inference besides get_tool_
           locally, e.g. `vllm serve Qwen/Qwen2.5-3B-Instruct --enable-auto-tool-choice --tool-call-parser hermes`).
           The endpoint must be local/offline at scoring time. Decoding is temperature 0 with a fixed seed.
   hf      same loop as `llm`, but the model runs in-process with transformers (no server needed, works on Windows).
+  cuongnq cuongnqcode's prompt format + agent loop, for models fine-tuned with cuongnqcode's training scripts.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import json
 import re
 import time
 import urllib.request
+from pathlib import Path
 
 
 # ============================================================================================ Base + baseline agents
@@ -275,6 +277,106 @@ def _parse_arguments(arguments):
     return parsed if isinstance(parsed, dict) else {}
 
 
+# ============================================================================================ cuongnq agent (adapter)
+# cuongnqcode's agent code, used as-is so a model fine-tuned with its build_sft.py / train_*.py sees exactly its
+# training format: its system prompt + date table, raw tool names and schemas, history as real tool messages,
+# one call per step, JSON and Qwen3.5 XML tool calls, validate-before-call and the unseen-ID guard.
+CUONGNQ_DIR = Path(__file__).resolve().parent.parent / "cuongnqcode" / "lifemate"
+
+
+def _import_cuongnq(code_dir: Path):
+    """Import cuongnqcode's `common` and `agent` modules (they import each other as top-level modules)."""
+    import importlib
+    import sys
+    if not (code_dir / "agent.py").is_file():
+        raise FileNotFoundError(f"cuongnqcode not found at {code_dir} (use --cuongnq-dir)")
+    if str(code_dir) not in sys.path:
+        sys.path.insert(0, str(code_dir))
+    return importlib.import_module("common"), importlib.import_module("agent")
+
+
+class CuongnqAgent(Agent):
+    """Runs cuongnqcode's agent loop (agent.LMBackend.run) inside this project's runner.
+    backend "hf": model (+ optional LoRA) in-process; "openai": a local vLLM / llama.cpp server."""
+    name = "cuongnq"
+
+    def __init__(self, catalog: dict[str, dict], model: str, backend: str = "hf", lora: str | None = None,
+                 base_url: str = "http://localhost:8000/v1", think: bool = False,
+                 code_dir: Path = CUONGNQ_DIR, device: str = "cuda"):
+        self.catalog = catalog
+        self.cuongnq_common, cuongnq_agent = _import_cuongnq(Path(code_dir))
+        self.max_steps = cuongnq_agent.MAX_STEPS
+        if backend == "hf":
+            self.backend = _make_cuongnq_hf_backend(cuongnq_agent.LMBackend, model, lora, think, device)
+        elif backend == "openai":
+            self.backend = cuongnq_agent.OpenAIBackend(model, base_url, think)
+        else:
+            raise ValueError(f"unknown cuongnq backend {backend!r}")
+        # Read tools may not be repeated with identical arguments (cuongnqcode's loop uses this to stop)
+        self.backend.read_tools = {name for name, spec in catalog.items() if spec.get("kind") == "read"}
+
+    def run(self, sample, transcripts, env, deadline):
+        messages = self.cuongnq_common.prompt_messages(sample, transcripts)
+        tools = self.cuongnq_common.tools_for(sample, self.catalog)
+        info = {"steps": 0, "stopped": None}
+        generate = self.backend.generate
+
+        def generate_with_deadline(step_messages, step_tools):
+            # cuongnqcode's loop has no time limit: an empty reply ends it once the deadline is near
+            if deadline - time.time() < 2:
+                info["stopped"] = "deadline"
+                return ""
+            info["steps"] += 1
+            output = generate(step_messages, step_tools)
+            info.setdefault("raw_outputs", []).append(output[:2000])  # model text per step, for the log
+            return output
+
+        self.backend.generate = generate_with_deadline
+        try:
+            self.backend.run(sample, env, messages, tools)
+        finally:
+            self.backend.generate = generate
+        info["final_text"] = next((message.get("content") for message in reversed(messages)
+                                   if message["role"] == "assistant" and message.get("content")), None)
+        # calls cuongnqcode's loop refused without sending them to env (schema error / unseen ID)
+        info["blocked"] = [json.loads(message["content"]) for message in messages[-2 * self.max_steps:]
+                           if message["role"] == "tool" and "chưa thực hiện" in message.get("content", "")]
+        return info
+
+
+def _make_cuongnq_hf_backend(lm_backend_class, model: str, lora: str | None, think: bool, device: str):
+    """cuongnqcode's HFBackend, but with fp16 on GPUs without bf16 (e.g. GTX 1650) and the model on `device`.
+    Built as a subclass of its LMBackend at runtime, because that class lives in cuongnqcode."""
+    import torch
+
+    class HFBackend(lm_backend_class):
+        def __init__(self):
+            from transformers import AutoTokenizer
+            from train_sft import load_model  # cuongnqcode: falls back to the vision class for Qwen3.5
+            use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported(including_emulation=False)
+            dtype = torch.bfloat16 if use_bf16 else (torch.float16 if device == "cuda" else torch.float32)
+            self.tok = AutoTokenizer.from_pretrained(model)
+            self.model = load_model(model, dtype).to(device)
+            if lora:
+                from peft import PeftModel
+                self.model = PeftModel.from_pretrained(self.model, lora)
+            self.model.eval()
+            self.think = think
+            self.max_new_tokens = 384 * (8 if think else 1)
+
+        def generate(self, msgs, tools):
+            prompt = self.tok.apply_chat_template(msgs, tools=tools, add_generation_prompt=True, return_tensors="pt",
+                                                  return_dict=True, enable_thinking=self.think).to(device)
+            with torch.inference_mode():
+                output_ids = self.model.generate(**prompt, max_new_tokens=self.max_new_tokens, do_sample=False,
+                                                 temperature=None, top_p=None, top_k=None,
+                                                 pad_token_id=self.tok.eos_token_id)
+            # keep special tokens: <tool_call> / <function=...> markers must survive for parse_tool_calls
+            return self.tok.decode(output_ids[0, prompt["input_ids"].shape[1]:], skip_special_tokens=False)
+
+    return HFBackend()
+
+
 # ============================================================================================ Factory
 def make_agent(name: str, catalog: dict[str, dict], **kw) -> Agent:
     """Create an agent by its --agent name; kw are passed to the LLM agents' constructors."""
@@ -286,4 +388,6 @@ def make_agent(name: str, catalog: dict[str, dict], **kw) -> Agent:
         return LLMAgent(catalog=catalog, **kw)
     if name == "hf":
         return HFAgent(catalog=catalog, **kw)
+    if name == "cuongnq":
+        return CuongnqAgent(catalog=catalog, **kw)
     raise ValueError(name)

@@ -60,16 +60,19 @@ def main(argv=None):
     parser.add_argument("--asr", choices=["faster-whisper", "hf", "oracle"], default="faster-whisper")
     parser.add_argument("--asr-model", default="large-v3-turbo")
     parser.add_argument("--compute-type", default="int8_float16", help="faster-whisper compute type")
+    parser.add_argument("--agent", choices=["hf", "cuongnq"], default="hf",
+                        help="hf = this project's prompt; cuongnq = cuongnqcode's prompt/loop (for its fine-tuned models)")
     parser.add_argument("--hf-model", default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--lora", default=None, help="--agent cuongnq: LoRA adapter folder")
     parser.add_argument("--time-limit", type=float, default=30.0,
                         help="per-sample agent deadline; the competition limit is 30 s")
-    parser.add_argument("--run-name", default=None, help="default: <split>-<n>-<asr>-<model>")
+    parser.add_argument("--run-name", default=None, help="default: <split>-<n>-<asr>-<agent>-<model>")
     args = parser.parse_args(argv)
 
     # --- Pick the samples and create the run folder (ids.txt records exactly which samples were used)
     ids = pick_ids(args.root, args.split, args.num_samples, args.seed)
     model_tag = args.hf_model.split("/")[-1]
-    run_name = args.run_name or f"{args.split}-{len(ids)}-{args.asr}-{model_tag}"
+    run_name = args.run_name or f"{args.split}-{len(ids)}-{args.asr}-{args.agent}-{model_tag}"
     run_dir = Path("runs") / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     ids_file = run_dir / "ids.txt"
@@ -86,10 +89,12 @@ def main(argv=None):
     timings["asr"] = run_step("1/3 ASR", "asr", asr_args)
 
     # --- Step 2: agent inference -> submission.jsonl + log.jsonl in the run folder
-    timings["inference"] = run_step("2/3 Agent inference", "infer", [
-        "--root", str(args.root), "--split", args.split, "--agent", "hf", "--asr", args.asr,
-        "--ids", str(ids_file), "--hf-model", args.hf_model, "--time-limit", str(args.time_limit),
-        "--out-dir", str(run_dir)])
+    infer_args = ["--root", str(args.root), "--split", args.split, "--agent", args.agent, "--asr", args.asr,
+                  "--ids", str(ids_file), "--hf-model", args.hf_model, "--time-limit", str(args.time_limit),
+                  "--out-dir", str(run_dir)]
+    if args.lora:
+        infer_args += ["--lora", args.lora]
+    timings["inference"] = run_step("2/3 Agent inference", "infer", infer_args)
 
     # --- Step 3: metric -> score.jsonl, results.csv, summary.csv in the run folder
     timings["score"] = run_step("3/3 Metric + CSV", "score", [

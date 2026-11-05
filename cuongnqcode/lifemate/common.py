@@ -12,7 +12,19 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent          # /home/.../zalo-ai-challenge
-DATA = ROOT / "train+public_test"                       # thư mục chứa train/, public_test/
+
+
+def _find_data_dir() -> Path:
+    """Thư mục chứa train/, public_test/: biến môi trường LIFEMATE_DATA, hoặc train+public_test nằm cạnh
+    thư mục code (bố cục gốc) hay cạnh thư mục cha (bố cục LifeMate/cuongnqcode/ + LifeMate/train+public_test/)."""
+    import os
+    if os.environ.get("LIFEMATE_DATA"):
+        return Path(os.environ["LIFEMATE_DATA"])
+    candidates = [ROOT / "train+public_test", ROOT.parent / "train+public_test"]
+    return next((path for path in candidates if path.is_dir()), candidates[0])
+
+
+DATA = _find_data_dir()                                 # thư mục chứa train/, public_test/
 
 # Câu trả lời kết thúc lượt (model học để dừng gọi tool)
 END_DONE = "Đã xong."
