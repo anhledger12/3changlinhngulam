@@ -8,8 +8,8 @@ Backends
 
 Decoding is deterministic: greedy/fixed beam, temperature 0, no temperature fallback.
 
-  python -m anhnn.asr --split train --backend oracle
-  python -m anhnn.asr --split public_test --backend faster-whisper --model large-v3-turbo --device cuda
+  python -m anhnncode.asr --split train --backend oracle
+  python -m anhnncode.asr --split public_test --backend faster-whisper --model large-v3-turbo --device cuda
 """
 from __future__ import annotations
 
@@ -17,9 +17,10 @@ import argparse
 import time
 from pathlib import Path
 
-from .common import DEFAULT_ROOT, load_samples, read_jsonl, utf8_stdout, write_jsonl
+from .common import DEFAULT_ROOT, load_samples, read_jsonl, select_samples, utf8_stdout, write_jsonl
 
 
+# ============================================================================================ Which audio to transcribe
 def user_turns(sample: dict) -> list[tuple[str, str | None]]:
     """(audio path, gold transcript or None) for every user turn in history and the final request, in order."""
     out = [(t["audio"], t.get("audio_text")) for t in sample.get("history", []) if t.get("role") == "user" and t.get("audio")]
@@ -27,7 +28,8 @@ def user_turns(sample: dict) -> list[tuple[str, str | None]]:
     return out
 
 
-SAMPLE_RATE = 16000
+# ============================================================================================ Audio loading
+SAMPLE_RATE = 16000  # Whisper models expect 16 kHz mono
 
 
 def load_wav(wav_path: str):
@@ -36,7 +38,7 @@ def load_wav(wav_path: str):
     import numpy as np
     import soundfile as sf
     audio, sr = sf.read(wav_path, dtype="float32", always_2d=True)
-    audio = audio.mean(axis=1)
+    audio = audio.mean(axis=1)  # stereo -> mono (no-op for mono files)
     if sr != SAMPLE_RATE:
         import torch
         import torchaudio.functional as F
@@ -44,7 +46,10 @@ def load_wav(wav_path: str):
     return np.ascontiguousarray(audio, dtype=np.float32)
 
 
+# ============================================================================================ ASR backends
 class Transcriber:
+    """Interface of an ASR backend: one WAV path in, one transcript string out."""
+
     def transcribe(self, wav_path: str) -> str:
         raise NotImplementedError
 
@@ -64,11 +69,13 @@ def _add_cuda12_dlls() -> None:
         for sub in ("cublas", "cudnn", "cuda_nvrtc"):
             d = os.path.join(base, sub, "bin")
             if os.path.isdir(d):
-                os.add_dll_directory(d)
-                os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+                os.add_dll_directory(d)  # for LoadLibraryEx-style loading
+                os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")  # for plain LoadLibrary
 
 
 class FasterWhisper(Transcriber):
+    """Whisper via CTranslate2 (faster-whisper). Default compute type: float16 on GPU, int8 on CPU."""
+
     def __init__(self, model: str, device: str, compute_type: str | None, beam: int, prompt: str | None):
         _add_cuda12_dlls()
         from faster_whisper import WhisperModel
@@ -76,12 +83,15 @@ class FasterWhisper(Transcriber):
         self.beam, self.prompt = beam, prompt
 
     def transcribe(self, wav_path: str) -> str:
+        # temperature=0.0 alone (no fallback list) keeps decoding deterministic
         segs, _ = self.m.transcribe(load_wav(wav_path), language="vi", beam_size=self.beam, temperature=0.0,
                                     condition_on_previous_text=False, initial_prompt=self.prompt, vad_filter=False)
         return " ".join(s.text.strip() for s in segs).strip()
 
 
 class HFWhisper(Transcriber):
+    """Any transformers ASR model (e.g. vinai/PhoWhisper-*) through the pipeline API; greedy or fixed beam."""
+
     def __init__(self, model: str, device: str, beam: int):
         import torch
         from transformers import pipeline
@@ -92,11 +102,16 @@ class HFWhisper(Transcriber):
         self.kw = {"generate_kwargs": {"language": "vi", "task": "transcribe", "num_beams": beam, "do_sample": False}}
 
     def transcribe(self, wav_path: str) -> str:
+        # Pass the samples directly (not the path) so the pipeline does not need ffmpeg
         return self.p({"raw": load_wav(wav_path), "sampling_rate": SAMPLE_RATE}, **self.kw)["text"].strip()
 
 
+# ============================================================================================ Command line
 def main(argv=None):
+    """Transcribe the selected samples' user turns and save/extend the transcript cache."""
     utf8_stdout()
+
+    # --- Arguments
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     ap.add_argument("--split", required=True)
@@ -108,12 +123,15 @@ def main(argv=None):
     ap.add_argument("--prompt", default=None, help="initial prompt / domain vocabulary (faster-whisper)")
     ap.add_argument("--out", type=Path, default=None, help="default: runs/transcripts/<split>.<backend>.jsonl")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--ids", default=None, help="comma-separated sample ids, or a file with one id per line")
     a = ap.parse_args(argv)
 
-    samples = load_samples(a.root, a.split)[: a.limit]
+    # --- Samples to process + transcripts already in the cache (resume)
+    samples = select_samples(load_samples(a.root, a.split), a.ids, a.limit)
     out = a.out or Path("runs/transcripts") / f"{a.split}.{a.backend}.jsonl"
     done = {r["audio"]: r for r in read_jsonl(out)} if out.exists() else {}
 
+    # --- Load the backend (oracle needs no model)
     if a.backend == "oracle":
         if any(s.get("audio_text") is None for s in samples):
             raise SystemExit("oracle backend needs audio_text, which only the train split has")
@@ -123,6 +141,7 @@ def main(argv=None):
     else:
         model = HFWhisper(a.model, a.device, a.beam)
 
+    # --- Transcribe every audio file not yet in the cache, checkpointing every 200 files
     rows, t0 = dict(done), time.time()
     todo = [(p, g) for s in samples for p, g in user_turns(s) if p not in rows]
     for i, (rel, gold) in enumerate(todo, 1):
@@ -132,6 +151,8 @@ def main(argv=None):
         if i % 200 == 0 or i == len(todo):
             write_jsonl(out, rows.values())  # checkpoint, so a crash resumes where it stopped
             print(f"[asr] {i}/{len(todo)} files, {time.time() - t0:.0f}s")
+
+    # --- Final save
     write_jsonl(out, rows.values())
     print(f"[asr] {len(rows)} transcripts -> {out}")
 

@@ -1,12 +1,12 @@
-# anhnn — batch inference + metric
+# anhnncode — batch inference + metric
 
 Run from `LifeMate/` (the folder holding `train+public_test/`). Core code is Python stdlib only; the ASR backends need
 `faster-whisper` or `transformers`+`torch`, and the LLM agent needs an OpenAI-compatible server (vLLM etc.) running locally.
 
 ```
-1. ASR (cached)   python -m anhnn.asr   --split <split> --backend oracle|faster-whisper|hf [--model ...]
-2. Inference      python -m anhnn.infer --split <split> --agent empty|oracle|llm [--asr <backend>] [--llm-url ... --llm-model ...]
-3. Metric         python -m anhnn.score --split train --submission runs/<run>/submission.jsonl [--all]
+1. ASR (cached)   python -m anhnncode.asr   --split <split> --backend oracle|faster-whisper|hf [--model ...]
+2. Inference      python -m anhnncode.infer --split <split> --agent empty|oracle|llm [--asr <backend>] [--llm-url ... --llm-model ...]
+3. Metric         python -m anhnncode.score --split train --submission runs/<run>/submission.jsonl [--all]
 ```
 
 | File | What it does |
@@ -21,13 +21,13 @@ Examples:
 
 ```
 # end-to-end with gold transcripts on train (upper bound for the agent)
-python -m anhnn.asr   --split train --backend oracle
-python -m anhnn.infer --split train --agent llm --asr oracle --llm-url http://localhost:8000/v1 --llm-model Qwen/Qwen2.5-3B-Instruct --workers 8
-python -m anhnn.score --split train --submission runs/train.llm.oracle/submission.jsonl
+python -m anhnncode.asr   --split train --backend oracle
+python -m anhnncode.infer --split train --agent llm --asr oracle --llm-url http://localhost:8000/v1 --llm-model Qwen/Qwen2.5-3B-Instruct --workers 8
+python -m anhnncode.score --split train --submission runs/train.llm.oracle/submission.jsonl
 
 # public test submission
-python -m anhnn.asr   --split public_test --backend faster-whisper --model large-v3-turbo
-python -m anhnn.infer --split public_test --agent llm --asr faster-whisper --llm-url ... --llm-model ...
+python -m anhnncode.asr   --split public_test --backend faster-whisper --model large-v3-turbo
+python -m anhnncode.infer --split public_test --agent llm --asr faster-whisper --llm-url ... --llm-model ...
 cd train+public_test && PYTHONPATH=public_test python -m zaic_tools --split public_test --root . --validate ../runs/public_test.llm.faster-whisper/submission.jsonl
 ```
 
