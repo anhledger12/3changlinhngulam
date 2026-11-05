@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LifeMate</title>
+<style>
+  :root { --fg:#1f2328; --muted:#59636e; --bg:#fff; --soft:#f6f8fa; --line:#d1d9e0; --accent:#0b6bcb; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --soft:#161b22; --line:#30363d; --accent:#4493f8; color-scheme: dark; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding:24px 16px 0; max-width:900px; margin:0 auto; }
+  h1 { margin:0 0 12px; font-size:1.9rem; }
+  nav { position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line); z-index:1; }
+  nav .bar { max-width:900px; margin:0 auto; padding:0 16px; display:flex; flex-wrap:wrap; gap:4px; }
+  nav button { font:inherit; background:none; border:0; border-bottom:3px solid transparent; padding:10px 14px; color:var(--muted); cursor:pointer; }
+  nav button[aria-selected="true"] { color:var(--fg); border-bottom-color:var(--accent); font-weight:600; }
+  main { max-width:900px; margin:0 auto; padding:8px 16px 48px; }
+  section > h2 { font-size:1.45rem; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  h3 { font-size:1.15rem; margin-top:1.8em; }
+  pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:12px 14px; overflow-x:auto; font:13.5px/1.5 ui-monospace, "Cascadia Code", Consolas, "Roboto Mono", monospace; }
+  code { font-family:ui-monospace, "Cascadia Code", Consolas, "Roboto Mono", monospace; font-size:.92em; background:var(--soft); padding:.1em .3em; border-radius:4px; }
+  pre code { background:none; padding:0; font-size:inherit; }
+  .formula { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:16px; overflow-x:auto; text-align:center; }
+  math { font-size:1.15em; }
+  .formula math + math { margin-top:14px; }
+  ul li { margin:.35em 0; }
+  @media print { nav { display:none; } section[hidden] { display:block !important; } }
+</style>
+</head>
+<body>
+<header><h1>LifeMate</h1></header>
+<nav><div class="bar" role="tablist"></div></nav>
+<main>
+
+<!-- ===================== TAB 1: OVERVIEW ===================== -->
+<section id="overview" data-tab="Overview">
+<h2>Overview</h2>
+<p>Voice is becoming the main way people talk to machines. The next generation of devices - smart speakers, in-car assistants, smart TVs, earbuds, watches, home robots - will have small screens or none at all, yet they will connect to the same apps and services people already rely on. A parent tells the living-room speaker to cool the house before leaving the office; a driver asks the car to pay the electricity bill; an office worker tells their earbuds to book a ride home after a late meeting; a shop owner asks the kitchen speaker to order lunch for the staff; a grandparent who never learned to use apps asks the TV to set a reminder to take medicine. On a phone, each of these tasks takes many taps across several apps; on a screenless device, it is only possible if the assistant can act on its own — yet today’s voice assistants mostly answer questions rather than act. What people want is to simply say it in plain Vietnamese — <em>“Tôi sắp về nhà, bật điều hòa phòng khách và đặt xe đón tôi”</em>, <em>“Chuyển cho mẹ 500 nghìn”</em>, <em>“Tắt hết đèn tầng một”</em>, <em>“Nhắc tôi họp lúc ba giờ chiều mai”</em> — and have it done.</p>
+
+<p><strong>LifeMate</strong> challenges you to build an AI agent that turns spoken Vietnamese requests into actions: given an audio request, the user’s context and the apps and services connected to the device, the agent plans the steps, calls the right tools with the right arguments and leaves every app in the state the user asked for — or asks for the missing information when the request is incomplete, and takes no action when no installed app can handle it. The agent is judged on what it does, not what it says. The competition data is anchored in everyday Vietnamese digital life - smart home, banking, ride-hailing, food delivery, email - with requests spoken in synthetic and real voices from the North, Central and South regions, but the capability you build is general: voice-driven, multi-step tool use by an AI agent that can run on any device, from phones to smart speakers to cars.</p>
+
+<h3>Input</h3>
+<ul>
+  <li><strong>A spoken request:</strong> an audio file with the user’s latest request in Vietnamese, possibly mixed with common English words.</li>
+  <li><strong>User context:</strong> current time, timezone, location and a user profile (e.g. home and work addresses).</li>
+  <li><strong>Available apps:</strong> the apps connected to the device (smart home, banking, ride-hailing, food delivery, email, …), each exposing a set of tools described by a JSON schema.</li>
+  <li><strong>Conversation history:</strong> earlier turns of the same conversation, if any.</li>
+  <li>A simulated environment holding the user’s app data (devices, accounts, reminders, contacts, …), which the agent can read and change only through tool calls.</li>
+</ul>
+
+<h3>Output</h3>
+<p>The agent produces an ordered list of tool calls (tool name and arguments) to handle the user's request. Depending on the request and the information available, the agent may:</p>
+<ul>
+  <li><strong>Execute actions:</strong> Call the necessary tools in sequence to complete the task and achieve the expected final app state.</li>
+  <li><strong>Request missing information:</strong> Call <code>sys.ask_missing_info</code> to specify the intended tool and missing parameters when additional information is needed. This may happen after other tool calls have already been executed.</li>
+  <li><strong>Handle out-of-scope requests:</strong> Return an empty list of tool calls (<code>[]</code>) if none of the available apps can handle the request.</li>
+  <li><strong>Final state hash:</strong> Along with the tool calls, the agent submits a <code>state_hash</code> generated by the execution environment (<code>env.get_state_hash()</code>), which is used to verify the final app state.</li>
+</ul>
+
+<h3>An example</h3>
+<ul>
+  <li><strong>Input:</strong> audio <em>“Tôi sắp về nhà, bật điều hòa phòng khách 26 độ và đặt xe đón tôi.”</em>; context: the user is at work (227 Nguyễn Văn Cừ, Quận 5, TP.HCM), and <code>user_profile.home</code> is 123 Trần Hưng Đạo, Quận 5, TP.HCM; installed apps: smart_home, ride, banking, email.</li>
+  <li><strong>Output:</strong> the agent first reads the device list to find the living-room AC, then sets it and books the ride. The submission line for this sample (one JSON object per line in <code>submission.jsonl</code>) is:</li>
+</ul>
+<pre><code>{"id": "s_000123", "tool_calls": [{"name": "smart_home.get_status", "arguments": {}},
+  {"name": "smart_home.climate_set", "arguments": {"device_id": "ac_living_room", "mode": "cool", "temperature": 26}},
+  {"name": "ride.book", "arguments": {"from": "227 Nguyễn Văn Cừ, Quận 5, TP.HCM", "to": "123 Trần Hưng Đạo, Quận 5, TP.HCM"}}],
+ "state_hash": "9f2c4e7a1b8d3f60"}</code></pre>
+</section>
+
+<!-- ===================== TAB 2: EVALUATION ===================== -->
+<section id="evaluation" data-tab="Evaluation">
+<h2>Evaluation</h2>
+<p>Each sample is scored on two things: whether the agent leaves the app data in the correct final state, and how closely its tool calls match the reference (gold) calls.</p>
+
+<h3>Metrics</h3>
+<ul>
+  <li><strong>State match:</strong> the submitted <em>state_hash</em> must equal the gold <em>state_hash</em>, otherwise the sample scores 0. Free-text (fuzzy) fields do not affect the hash. The <em>state_hash</em> must be computed by the <em>zaic_tools</em> environment (<em>env.get_state_hash()</em>) and can be reproduced by the organisers, who replay the submitted <em>tool_calls</em> in order with the matching version of <em>zaic_tools</em>; if the results differ, the organisers' result is final.</li>
+  <li><strong>Tool-call match:</strong> a submitted call matches a gold call when the tool name is the same, every non-fuzzy argument is identical, and every fuzzy argument has token-F1 &gt; 0.6 (after lowercasing and Unicode NFC). Each call can match at most one call; order is not considered.</li>
+  <li><strong>Out-of-scope samples:</strong> if the gold list is empty, the sample scores 1 only when the submitted list is also empty.</li>
+  <li><strong>Missing information:</strong> <code>sys.ask_missing_info</code> is scored like any other tool;</li>
+</ul>
+
+<h3>Formula</h3>
+<p>If the gold list is empty, the sample scores 1 only when the submitted list is also empty; otherwise it scores 0.</p>
+<p>Otherwise (the gold list is not empty):</p>
+<div class="formula">
+<math display="block">
+  <mtext>Score</mtext><mo>=</mo>
+  <mrow><mo>{</mo>
+    <mtable columnalign="left">
+      <mtr><mtd><mn>0</mn><mo>,</mo></mtd><mtd><mtext>if&nbsp;</mtext><msub><mtext>hash</mtext><mtext>sys</mtext></msub><mo>≠</mo><msub><mtext>hash</mtext><mtext>gold</mtext></msub><mtext>&nbsp;or&nbsp;</mtext><mi>M</mi><mo>=</mo><mn>0</mn></mtd></mtr>
+      <mtr><mtd><mfrac><mrow><mn>2</mn><mo>·</mo><mi>P</mi><mo>·</mo><mi>R</mi></mrow><mrow><mi>P</mi><mo>+</mo><mi>R</mi></mrow></mfrac><mo>,</mo></mtd><mtd><mtext>otherwise</mtext></mtd></mtr>
+    </mtable>
+  </mrow>
+</math>
+<math display="block">
+  <mi>P</mi><mo>=</mo><mfrac><mi>M</mi><mrow><mi>M</mi><mo>+</mo><mi>U</mi></mrow></mfrac><mo>,</mo><mspace width="2em"/>
+  <mi>R</mi><mo>=</mo><mfrac><mi>M</mi><mrow><mo>|</mo><mi>G</mi><mo>|</mo></mrow></mfrac>
+</math>
+<math display="block">
+  <mtext>Final score</mtext><mo>=</mo><mfrac><mn>100</mn><mi>N</mi></mfrac>
+  <munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover>
+  <msub><mtext>Score</mtext><mi>i</mi></msub>
+</math>
+</div>
+<p>Where <em>P</em> and <em>R</em> are precision and recall; <em>M</em> is the number of matched calls; <em>|G|</em> is the number of gold calls; <em>U</em> is the number of unmatched submitted calls (including calls rejected with a schema error); <em>N</em> is the number of samples in the test set.</p>
+</section>
+
+<!-- ===================== TAB 3: DATA ===================== -->
+<section id="data" data-tab="Data">
+<h2>Data</h2>
+<p>The data has three splits with the same layout: <strong>train</strong> (about 1,600 with labels), <strong>public_test</strong> (about 600 samples, for the public leaderboard) and <strong>private_test</strong> (about 600 samples, released after the final Docker solution is frozen).</p>
+
+<h3>Folder structure</h3>
+<pre><code>&lt;split&gt;/                                   # train | public_test | private_test
+├── audio/&lt;id&gt;/&lt;id&gt;.wav                    # spoken request of each sample
+├── &lt;split&gt;.jsonl                           # one sample per line
+├── &lt;split&gt;_tools_catalog.json              # schema of every app tool
+├── &lt;split&gt;_environment/&lt;id&gt;/state.json     # initial app data of each sample
+├── sample_submission.jsonl                 # public_test only
+└── zaic_tools/                             # execution environment library for this split</code></pre>
+
+<h3>Files</h3>
+<ul>
+  <li><strong>(1) Audio:</strong> the user’s latest request and every earlier user turn in history, in Vietnamese with some common English words (e.g. "book", "AC"). WAV, 16 kHz, mono, 16-bit; about 100% recorded by real speakers of different ages, genders and regions (North, Central, South).</li>
+  <li><strong>(2) &lt;split&gt;.jsonl:</strong> the input of each sample — id, audio path, user context (current_time, timezone, current location, user_profile, installed_apps) and earlier conversation turns (history). Train samples also include audio_text (the transcript of every user turn) and the label: the gold tool_calls, their tool_results and the final_state (the full data of every app the gold calls <strong>changed</strong>).</li>
+  <li><strong>(3) &lt;split&gt;_tools_catalog.json:</strong> the apps of the split and the schema of every tool — name (app.tool), description, kind (read, write, or meta for sys.ask_missing_info), parameters as JSON Schema and a short summary of the returned fields.
+    <ul>
+      <li>Parameters may carry <code>x-ref</code> (must be a valid ID in the app data), <code>x-match: "fuzzy"</code> (free text, scored by token-F1) and <code>x-one-of</code> (at least one of the listed groups is required, e.g. contact_id or phone_number). The catalog covers the whole split; the tools a sample may call are those of its <code>context.installed_apps</code>.</li>
+    </ul>
+  </li>
+  <li><strong>(4) state.json:</strong> the initial app data of a sample (devices, accounts, contacts, reminders, …), with the actions of history already applied, plus a <code>_meta</code> block (question_id, current_time, tools). It is loaded by the environment; the agent must not read it directly.</li>
+</ul>
+
+<h3>Examples</h3>
+<p><strong>Sample record in &lt;split&gt;.jsonl</strong></p>
+<pre><code>{"id": "train_xxxx", "audio": "audio/train_xxxx/train_xxxx.wav",
+ "context": {"current_time": "2026-11-16T17:00:00+07:00", "timezone": "Asia/Ho_Chi_Minh",
+             "user_profile": {"home_address": "123 Trần Hưng Đạo, Quận 5, TP.HCM"},
+             "installed_apps": {"smart_home": {"tools": [...]}, "ride": {"tools": [...]}}},
+ "history": [],
+ "label": {"tool_calls": [...], "tool_results": [...], "final_state": {...}}}   # label: train only</code></pre>
+
+<p><strong>Sample tool in &lt;split&gt;_tools_catalog.json (inside apps[].tools)</strong></p>
+<pre><code>{"schema_version": "2.7.0",
+ "note": "kind của mỗi tool: read = ...; write = ...; meta = ...",
+ "apps": [
+   {"id": "smart_home", "name_vi": "Nhà thông minh", "group": "home", "description": "...",
+    "tools": [
+      {
+        "name": "smart_home.light_set",
+        "kind": "write",
+        "description": "Bật/tắt/chỉnh sáng đèn",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "device_id": {"type": "string", "description": "ID thiết bị, lấy từ smart_home.get_status", "x-ref": "smart_home.devices"},
+            "power": {"type": "string", "enum": ["on", "off"]},
+            "brightness": {"type": "integer"},
+            "color": {"type": "string"}
+          },
+          "required": ["device_id"]
+        },
+        "returns": "",
+        "app": "smart_home"
+      },
+      ...
+    ]},
+   ...
+ ]}</code></pre>
+
+<p><strong>Sample state.json</strong></p>
+<pre><code>{
+  "_meta": {"question_id": "train_0248", "current_time": "2026-11-19T18:30:00+07:00", "tools": [...]},
+  "smart_home": {
+    "devices": [
+      {"id": "light_living", "name": "đèn phòng khách", "type": "light", "room": "phòng khách", "floor": 1,
+       "state": {"power": "off", "brightness": 40}},
+      ...
+    ]
+  },
+  "contacts": {"contacts": [{"id": "c_01", "name": "Hương", "relation": "bạn", "phone": "09701957839"}, ...]},
+  ...
+}</code></pre>
+
+<h3>Execution environment</h3>
+<p>The organisers provide the <strong>zaic_tools</strong> Python library, which simulates the apps locally. Each sample runs in its own ToolEnv, which must be created only once. The environment checks each call against the tool schema, executes it, updates the app data and returns the result, which the agent can use in its next step. A call fails with <code>"ok": false</code> and an error message, typically when the tool does not exist or an argument has the wrong data type. Only tools from the apps listed in <code>context.installed_apps</code> (plus <code>sys.ask_missing_info</code>) may be called. Every call, successful or not, is logged; this call log, together with the final state hash, forms the submission. Each split comes with its own version of zaic_tools.</p>
+<pre><code>import sys
+sys.path.insert(0, "public_test")   # zaic_tools of the split
+from zaic_tools import ToolEnv
+
+# Create one environment per sample; root is the folder that holds the split folders
+env = ToolEnv("public_test", "public_0001", root=".")
+
+# Check arguments against the tool schema (nothing is executed)
+env.validate("smart_home.light_set", {"power": "off"})
+# -&gt; {"ok": false, "error": "thiếu tham số bắt buộc: device_id"}
+
+# Execute a call
+# -&gt; {"ok": true, ...} or {"ok": false, "error": "..."}
+env.call("smart_home.get_status", {})
+
+# Call log and final state hash for submission
+env.get_tool_calls(), env.get_state_hash()</code></pre>
+<p>Rule: The agent/solution <strong>must not</strong> read, copy or parse any file under <code>&lt;split&gt;_environment/</code> (including state.json); all app data is accessed only through the organisers' zaic_tools, with exactly one ToolEnv per sample, and every call made on it must appear in the submission.</p>
+
+<h3>Inference and submission template</h3>
+<p>The template below runs the agent on every sample of a split and writes <code>submission.jsonl</code>: one line per sample with id, tool_calls and state_hash. Run it from the folder that holds <code>public_test/</code>. Create exactly one ToolEnv per sample inside <code>infer()</code>.</p>
+<pre><code>import json
+import sys
+from pathlib import Path
+
+ROOT = Path(".")                       # folder that holds public_test/
+SPLIT = "public_test"
+sys.path.insert(0, str(ROOT / SPLIT))  # zaic_tools of the split
+from zaic_tools import ToolEnv
+
+def infer(item):
+    env = ToolEnv(SPLIT, item["id"], root=ROOT)  # one environment per sample
+    # Your pipeline: ASR (ROOT / SPLIT / item["audio"]) -&gt; LLM -&gt; env.call(tool, arguments) -&gt; LLM -&gt; ...
+    # e.g. env.call("smart_home.get_status", {})
+    #      env.call("smart_home.light_set", {"device_id": "light_kitchen", "power": "off"})
+    return env.get_tool_calls(), env.get_state_hash()
+
+with open(ROOT / SPLIT / f"{SPLIT}.jsonl", encoding="utf-8") as fin, \
+     open("submission.jsonl", "w", encoding="utf-8") as fout:
+    for line in fin:
+        item = json.loads(line)
+        tool_calls, state_hash = infer(item)
+        fout.write(json.dumps({"id": item["id"], "tool_calls": tool_calls, "state_hash": state_hash}, ensure_ascii=False) + "\n")</code></pre>
+
+<h3>Submission file format</h3>
+<p>The file must be UTF-8 JSON Lines with exactly one line per sample in the split; see <code>sample_submission.jsonl</code> for the format.</p>
+<p>Submission file example (three lines of <code>public_test/sample_submission.jsonl</code>):</p>
+<pre><code>{"id": "public_0039", "tool_calls": [{"name": "alarm.list", "arguments": {}}, {"name": "alarm.create", "arguments": {"time": "2026-11-11T05:30:00+07:00"}}], "state_hash": "461fcd40…"}
+{"id": "public_0001", "tool_calls": [{"name": "sys.ask_missing_info", "arguments": {"tool_name": "music.add_to_playlist", "params": ["playlist_id", "track_id"]}}], "state_hash": "c83200c2…"}
+{"id": "public_0002", "tool_calls": [], "state_hash": "0c9a2ec0…"}</code></pre>
+<p>Other notes are described in README.md inside the data package.</p>
+</section>
+
+<!-- ===================== TAB 4: RULES ===================== -->
+<section id="rules" data-tab="Rules">
+<h2>Rules</h2>
+<h3>Competition rounds</h3>
+<p>The competition runs on a leaderboard with two rounds:</p>
+<ul>
+  <li><strong>Round 1 — Public Test:</strong> teams develop their solutions, run them on public_test and submit the results. Scores appear on the public leaderboard and are for reference only during development.</li>
+  <li><strong>Final solution submission</strong>: the final solution is submitted as a Docker image, following the organisers’ separate guidelines. For scoring, the organisers mount the private test folder (same structure as public_test) into the container at <strong>/data</strong>, run the inference script and collect the result at <strong>result/submission.jsonl</strong>. The container must run fully offline, with no network access.</li>
+  <li><strong>Round 2 — Private Test:</strong> after teams submit and freeze their solutions, the organisers release private_test and its environment. Teams run their frozen solution with the provided zaic_tools and submit the results. The organisers re-run the submitted Docker image to verify the results, and the final ranking is based on the private_test score.</li>
+</ul>
+
+<h3>Technical requirements</h3>
+<p>Every solution must meet all of the following requirements:</p>
+<ul>
+  <li><strong>Model size:</strong> the whole system (ASR, LLM and any other components) must have fewer than 6B parameters in total. The LLM must have fewer than 5B parameters and a context length of at most 16K (16,384) tokens.</li>
+  <li><strong>Data access:</strong> the agent must not read state.json directly; all reads and writes go through the execution environment.</li>
+  <li><strong>Allowed data and resources:</strong> teams may use public data and open-source models released before 26 October 2026, provided their licences allow it. Synthetic data may be generated with other services or models (LLM, TTS, …) during development, but these must not be used at inference. Labelling public_test or private_test (manually or with external services or models) to train or tune a solution is not allowed.</li>
+  <li><strong>Runtime and hardware:</strong> each sample must be processed within 30 seconds; samples that time out or fail to execute score 0. The solution must run fully offline, with no external APIs or services at inference. Scoring hardware: 1 NVIDIA A30 GPU, a 16-core Intel Xeon Gold 6442Y CPU and 64 GB RAM.</li>
+  <li><strong>Reproducibility:</strong> fix all random seeds (Python, NumPy, PyTorch, …) and use deterministic decoding for ASR and LLM, such as greedy decoding or temperature = 0. If a re-run differs from the submitted results, the organisers run the Docker image 5 times and use the average score as the official score.</li>
+  <li>The solution / agent <strong><u>must not</u></strong> read, copy or parse any file under <code>&lt;split&gt;_environment/</code> (including state.json); all app data is accessed only through the organisers' zaic_tools, with exactly one ToolEnv per sample, and every call made on it must appear in the submission. At inference only <code>validate</code>, <code>call</code>, <code>get_tool_calls</code> and <code>get_state_hash</code> may be used; <code>get_state</code>, <code>states</code>, <code>Executor</code>, <code>Simulator</code> or cloning the env are not allowed (<code>get_state</code> is for train only).</li>
+  <li><strong>Tie-breaking:</strong> if teams have the same final score, the organisers re-score their tool_calls with the F1 formula, ignoring the state_hash check. If they are still tied, the team with the lower average processing time per sample ranks higher.</li>
+</ul>
+</section>
+
+<!-- ===================== TAB 5: TIMELINE ===================== -->
+<section id="timeline" data-tab="Timeline">
+<h2>Timeline</h2>
+<h3>I. Public Test Round (October 26 – November 16)</h3>
+<ul>
+  <li>Participating teams build their own solutions, run them on the organizers’ public test set, and submit result files (JSONL) via the Submission section on the Zalo AI Challenge portal. Teams are allowed up to 5 submissions per day, and the quota will be reset at the end of each day. Scores and rankings will be displayed on the public leaderboard.</li>
+  <li>On November 16, participating teams must submit their complete solutions, including training code, inference code, and data, in the form of a Docker package to the organizers via the “Solution Submission” form on the Zalo AI Challenge portal. Since the Docker file is usually quite large, teams should provide a checksum and a public Google Drive link so that the organizer can download it.<br>
+  Each team is allowed up to 2 submissions. The organizer will only evaluate the last submission. Submission deadline: 23:59 (GMT+7).</li>
+</ul>
+<h3>II. Private Test Round (November 20 – November 23)</h3>
+<ul>
+  <li>At 9:00 AM on November 20, the organizer will release the private test set. Participating teams will run their submitted solutions on this set and submit the result files (JSONL) via the Submission section on the Zalo AI Challenge portal, with a deadline of 23:59 (GMT+7) on November 23. The private leaderboard will be displayed in chronological order (based on submission time).</li>
+</ul>
+<p>The organizer will evaluate the submitted solutions to verify results, review source code, and detect any cheating. The top 2 teams will be announced on December 2.</p>
+</section>
+
+</main>
+<script>
+(function () {
+  var sections = Array.prototype.slice.call(document.querySelectorAll('main > section'));
+  var bar = document.querySelector('nav .bar');
+  var buttons = sections.map(function (s) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'tab'); b.textContent = s.dataset.tab;
+    b.addEventListener('click', function () { show(s.id, true); });
+    bar.appendChild(b); return b;
+  });
+  function show(id, push) {
+    var found = sections.some(function (s) { return s.id === id; });
+    if (!found) id = sections[0].id;
+    sections.forEach(function (s, i) {
+      var on = s.id === id; s.hidden = !on; buttons[i].setAttribute('aria-selected', on);
+    });
+    if (push) { history.replaceState(null, '', '#' + id); window.scrollTo(0, 0); }
+  }
+  window.addEventListener('hashchange', function () { show(location.hash.slice(1)); });
+  show(location.hash.slice(1));
+})();
+</script>
+</body>
+</html>
